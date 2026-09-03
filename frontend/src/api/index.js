@@ -129,6 +129,14 @@ export async function updateUser(id, patch) {
   return data;
 }
 
+// Needs POST /api/users/{id}/reset-password on the backend — see
+// backend/API_CHANGE_password_reset.md. Returns { temp_password } once,
+// same shape as createUser.
+export async function resetUserPassword(id) {
+  const { data } = await http.post(`/users/${id}/reset-password`);
+  return data;
+}
+
 export async function listRoles() {
   const { data } = await http.get('/roles');
   // is_system comes back as "0"/"1" (string) — normalize so truthy

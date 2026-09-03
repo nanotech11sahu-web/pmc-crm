@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '../api/index.js';
 import TableLoadingOverlay from '../components/TableLoadingOverlay.jsx';
+import ResetPasswordModal from '../components/ResetPasswordModal.jsx';
 
 function NewUserForm({ roles, onCreated }) {
   const [form, setForm] = useState({ name: '', email: '', mobile: '', role_id: roles[0]?.id || '' });
@@ -111,6 +112,7 @@ export default function Users() {
   const [roles, setRoles] = useState([]);
   const [permissions, setPermissions] = useState([]);
   const [usersLoading, setUsersLoading] = useState(true);
+  const [resetUser, setResetUser] = useState(null);
 
   const loadUsers = useCallback(() => {
     setUsersLoading(true);
@@ -156,6 +158,7 @@ export default function Users() {
                     {u.is_active ? 'Active' : 'Disabled'}
                   </button>
                 </div>
+                <button className="btn btn-secondary btn-sm mt-2" onClick={() => setResetUser(u)}>Reset password</button>
               </div>
             ))}
           </div>
@@ -168,6 +171,7 @@ export default function Users() {
                 <th className="text-left px-4 py-3">Email</th>
                 <th className="text-left px-4 py-3">Role</th>
                 <th className="text-left px-4 py-3">Status</th>
+                <th></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -185,6 +189,9 @@ export default function Users() {
                       {u.is_active ? 'Active' : 'Disabled'}
                     </button>
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <button className="btn btn-secondary btn-sm" onClick={() => setResetUser(u)}>Reset password</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -194,6 +201,8 @@ export default function Users() {
       </div>
 
       {roles.length > 0 && permissions.length > 0 && <PermissionMatrix roles={roles} permissions={permissions} />}
+
+      {resetUser && <ResetPasswordModal user={resetUser} onClose={() => setResetUser(null)} />}
     </div>
   );
 }
