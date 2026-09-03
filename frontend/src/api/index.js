@@ -46,7 +46,14 @@ export async function revertDirectoryEdit(logId) {
 
 function normalizeLead(l) {
   if (!l) return l;
-  return { ...l, directory: l.directory ? normalizeDirectoryRow(l.directory) : l.directory };
+  return {
+    ...l,
+    // is_flagged_missing comes back as the string "0"/"1", which is
+    // truthy either way in JS — normalize so `is_flagged_missing || ...`
+    // checks downstream don't treat every lead as flagged.
+    is_flagged_missing: Number(l.is_flagged_missing) === 1,
+    directory: l.directory ? normalizeDirectoryRow(l.directory) : l.directory,
+  };
 }
 
 export async function listLeads(params) {
@@ -100,7 +107,16 @@ export async function listMessageLog(leadId) {
 
 export async function listUsers() {
   const { data } = await http.get('/users');
-  return rowsOf(data).map((u) => ({ ...u, role: u.role ?? u.role_name }));
+  // is_active/role_id come back as strings (e.g. "0") from the API,
+  // which are truthy in JS — normalize to real numbers so `is_active ?
+  // ... : ...` checks downstream behave correctly instead of treating
+  // "0" as active.
+  return rowsOf(data).map((u) => ({
+    ...u,
+    role: u.role ?? u.role_name,
+    is_active: Number(u.is_active),
+    role_id: Number(u.role_id),
+  }));
 }
 
 export async function createUser(payload) {
@@ -115,7 +131,11 @@ export async function updateUser(id, patch) {
 
 export async function listRoles() {
   const { data } = await http.get('/roles');
-  return rowsOf(data);
+  // is_system comes back as "0"/"1" (string) — normalize so truthy
+  // checks (e.g. "is this the Owner role") work correctly; "0" is
+  // truthy in JS and was disabling permission checkboxes for every
+  // non-Owner role too.
+  return rowsOf(data).map((r) => ({ ...r, is_system: Number(r.is_system) === 1 }));
 }
 
 export async function listPermissions() {

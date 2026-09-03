@@ -5,15 +5,36 @@ import TableLoadingOverlay from '../components/TableLoadingOverlay.jsx';
 function NewUserForm({ roles, onCreated }) {
   const [form, setForm] = useState({ name: '', email: '', mobile: '', role_id: roles[0]?.id || '' });
   const [busy, setBusy] = useState(false);
+  const [justCreated, setJustCreated] = useState(null); // { name, email, temp_password }
 
   async function submit(e) {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.createUser({ ...form, role_id: Number(form.role_id), password_hash: 'set-on-first-login' });
+      const res = await api.createUser({ ...form, role_id: Number(form.role_id) });
+      setJustCreated({ name: form.name, email: form.email, temp_password: res.temp_password });
       setForm({ name: '', email: '', mobile: '', role_id: roles[0]?.id || '' });
       onCreated();
     } finally { setBusy(false); }
+  }
+
+  if (justCreated) {
+    return (
+      <div className="card p-5 space-y-3">
+        <div className="font-semibold">User created</div>
+        <p className="text-sm text-slate-500">
+          Share this temporary password with <span className="font-medium text-slate-700">{justCreated.name}</span> now —
+          it's only shown once and can't be retrieved again after you leave this page.
+        </p>
+        <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-1">
+          <div className="text-xs text-slate-400">Email</div>
+          <div className="text-sm font-medium break-all">{justCreated.email}</div>
+          <div className="text-xs text-slate-400 mt-2">Temporary password</div>
+          <div className="text-sm font-mono font-semibold break-all">{justCreated.temp_password}</div>
+        </div>
+        <button className="btn btn-secondary w-full" onClick={() => setJustCreated(null)}>Add another user</button>
+      </div>
+    );
   }
 
   return (
