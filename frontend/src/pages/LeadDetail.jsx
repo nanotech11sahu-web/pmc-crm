@@ -2,8 +2,43 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useLocation, Link } from 'react-router-dom';
 import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { LeadTypeBadge, StageBadge, MissingBadge } from '../components/Badge.jsx';
+import { LeadTypeBadge, StageBadge, MissingFieldBadge, PremiumBadge } from '../components/Badge.jsx';
 import Spinner from '../components/Spinner.jsx';
+import BulkSendModal from '../components/BulkSendModal.jsx';
+import EditableDetailRow from '../components/EditableDetailRow.jsx';
+
+// tbl_directory columns that are internal/computed or already shown
+// elsewhere on the page — everything else is rendered in "All details".
+const HIDDEN_DIR_FIELDS = new Set([
+  'is_premium', 'missing_kind', 'contact_status',      // computed flags (shown as badges/tiles)
+  'DirectoryID', 'CompanyName',                        // shown in the page header
+  'CategoryName', 'category_names',                    // shown in the header; injected empty by the normalizer
+  'BannerImage',                                       // hidden per request — not useful as a text field here
+]);
+
+// System/derived columns that must never be hand-edited — kept
+// read-only. Everything else (including EstablishYear, Keywords,
+// BusinessInfo, BannerImage) is editable. NOTE: those four are currently
+// blocked by the backend PATCH whitelist and will show a clear "ask your
+// admin to enable" message until the backend adds them — see
+// API_CHANGE_premium_and_missing_filters.md §6.
+const READONLY_DIR_FIELDS = new Set([
+  'DirectorySlug', 'Status', 'ApprovalDate', 'is_verified', 'likes_count',
+]);
+
+// Fields that hold long free text — edited with a textarea, not a
+// one-line input.
+const MULTILINE_DIR_FIELDS = new Set(['BusinessInfo', 'Keywords', 'Address1']);
+
+// "EmailAddress" -> "Email Address", "CurrentCity" -> "Current City"
+function prettyLabel(key) {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+const EMPTY = (v) => v == null || String(v).trim() === '';
 
 const TYPES = ['hot', 'medium', 'cold'];
 const STAGES = ['new', 'contacted', 'followup', 'converted', 'lost'];
@@ -44,6 +79,7 @@ export default function LeadDetail() {
   const [batchLabel, setBatchLabel] = useState('');
   const [logForm, setLogForm] = useState({ activity_type: 'call', outcome: '', notes: '' });
   const [saving, setSaving] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
 
   // Every listing behaves as a lead: if we weren't handed a leadId (e.g.
   // a direct URL visit, a bookmark, or a page refresh — React Router
@@ -100,17 +136,52 @@ export default function LeadDetail() {
   const dir = lead.directory;
 
   return (
-    <div className="p-4 sm:p-8 max-w-5xl">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto">
       <Link to="/listings" className="text-sm text-slate-400 hover:text-slate-700">← Back to listings</Link>
 
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mt-2 mb-6">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold flex flex-wrap items-center gap-2">{dir?.CompanyName} {lead.is_flagged_missing || (!dir?.EmailAddress && !dir?.MobileNumber) ? <MissingBadge /> : null}</h1>
+          <h1 className="text-xl sm:text-2xl font-bold flex flex-wrap items-center gap-2">
+            {dir?.CompanyName}
+            {dir?.is_premium && <PremiumBadge />}
+            <MissingFieldBadge kind={api.missingKind(dir || {})} />
+          </h1>
           <p className="text-slate-500 text-sm">{dir?.CategoryName} · {dir?.CurrentCity} · {dir?.ContactName}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <LeadTypeBadge type={lead.lead_type} />
           <StageBadge stage={lead.stage} />
+          {can('message.bulk_send') && (
+            <button className="btn btn-primary btn-sm" onClick={() => setSendOpen(true)}>Send WhatsApp / SMS / Email</button>
+          )}
+        </div>
+      </div>
+
+      <div className="card p-6 mb-6">
+        <div className="flex items-baseline justify-between mb-1">
+          <h2 className="font-semibold text-lg">All directory details</h2>
+          <span className="text-xs text-slate-400">{can('directory.edit') ? 'Hover a row to edit · missing fields in red' : 'Missing fields in red'}</span>
+        </div>
+        <div className="text-xs text-slate-400 mb-4">Every field stored for this listing.</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12">
+          {dir && Object.keys(dir)
+            .filter((k) => !HIDDEN_DIR_FIELDS.has(k))
+            .map((k) => (
+              <EditableDetailRow
+                key={k}
+                directoryId={dir.DirectoryID ?? directoryId}
+                fieldKey={k}
+                label={prettyLabel(k)}
+                value={dir[k]}
+                canEdit={can('directory.edit')}
+                readOnly={READONLY_DIR_FIELDS.has(k)}
+                multiline={MULTILINE_DIR_FIELDS.has(k)}
+                onSaved={load}
+              />
+            ))}
+          {(!dir || Object.keys(dir).filter((k) => !HIDDEN_DIR_FIELDS.has(k)).length === 0) && (
+            <div className="text-slate-400 py-2">No directory details available.</div>
+          )}
         </div>
       </div>
 
@@ -204,6 +275,14 @@ export default function LeadDetail() {
           </div>
         </div>
       </div>
+
+      {sendOpen && (
+        <BulkSendModal
+          leadIds={[leadId]}
+          onClose={() => setSendOpen(false)}
+          onSent={() => { setSendOpen(false); load(); }}
+        />
+      )}
     </div>
   );
 }
