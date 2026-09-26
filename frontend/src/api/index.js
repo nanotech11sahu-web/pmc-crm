@@ -20,13 +20,49 @@ export async function me() {
   return data.user ?? data;
 }
 
-function normalizeDirectoryRow(r) {
-  return { ...r, CategoryName: r.CategoryName ?? r.category_names ?? '' };
+// Which of email / mobile is missing on a directory row. Drives the
+// three-case listing view (item 6): 'email' = no email, 'mobile' = no
+// mobile, 'both' = neither, '' = both present.
+export function missingKind(r) {
+  const noEmail = !String(r?.EmailAddress ?? '').trim();
+  const noMobile = !String(r?.MobileNumber ?? '').trim();
+  if (noEmail && noMobile) return 'both';
+  if (noEmail) return 'email';
+  if (noMobile) return 'mobile';
+  return '';
 }
 
+// Premium flag can come back under a few spellings depending on how the
+// backend exposes tbl_directory — normalize them all into a single
+// boolean `is_premium`. See backend/API_CHANGE_premium_and_missing_filters.md.
+function readPremium(r) {
+  const v = r?.is_premium ?? r?.IsPremium ?? r?.Premium ?? r?.is_premium_listing ?? r?.ListingType ?? r?.SubscriptionType;
+  if (v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'premium' || s === 'paid';
+}
+
+function normalizeDirectoryRow(r) {
+  const row = { ...r, CategoryName: r.CategoryName ?? r.category_names ?? '' };
+  row.is_premium = readPremium(r);
+  row.missing_kind = missingKind(row);
+  return row;
+}
+
+// `contactStatus` = '' | 'email' | 'mobile' | 'both' | 'complete'
+// `premium` = '' | 'premium' | 'non'
+// These are passed through to the backend (see the API_CHANGE doc); we
+// ALSO filter client-side as a fallback so the feature works today even
+// before the backend honors the params.
 export async function listDirectory(params) {
   const { data } = await http.get('/directory', { params });
-  return { ...data, rows: rowsOf(data).map(normalizeDirectoryRow) };
+  let rows = rowsOf(data).map(normalizeDirectoryRow);
+  const { contactStatus, premium } = params || {};
+  if (contactStatus === 'complete') rows = rows.filter((r) => r.missing_kind === '');
+  else if (contactStatus) rows = rows.filter((r) => r.missing_kind === contactStatus);
+  if (premium === 'premium') rows = rows.filter((r) => r.is_premium);
+  else if (premium === 'non') rows = rows.filter((r) => !r.is_premium);
+  return { ...data, rows };
 }
 
 export async function updateDirectoryField(directoryId, field, value) {
@@ -184,6 +220,13 @@ export async function dashboardStats() {
     leadsByStage: bucketCounts(data.leads_by_stage ?? data.leadsByStage, ['stage'], ['new', 'contacted', 'followup', 'converted', 'lost']),
     followupsToday: Number(data.followups_today ?? data.followupsToday ?? 0),
     messagesSentTotal: Number(data.messages_sent ?? data.messagesSentTotal ?? 0),
+    // Per-case missing breakdown (email-only / mobile-only / both).
+    // Needs backend support — see API_CHANGE_premium_and_missing_filters.md.
+    // null when the backend doesn't return it yet, so the UI can show
+    // "—" instead of a wrong 0.
+    missingEmailCount: data.missing_email_count != null ? Number(data.missing_email_count) : null,
+    missingMobileCount: data.missing_mobile_count != null ? Number(data.missing_mobile_count) : null,
+    missingBothCount: data.missing_both_count != null ? Number(data.missing_both_count) : Number(data.missing_count ?? data.missingCount ?? 0),
   };
 }
 

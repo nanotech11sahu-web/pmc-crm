@@ -2,8 +2,9 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { StageBadge, MissingBadge } from '../components/Badge.jsx';
+import { StageBadge, MissingBadge, MissingFieldBadge, PremiumBadge } from '../components/Badge.jsx';
 import BulkSendModal from '../components/BulkSendModal.jsx';
+import ChannelMultiSelect from '../components/ChannelMultiSelect.jsx';
 import InlineContactCell from '../components/InlineContactCell.jsx';
 import TableLoadingOverlay from '../components/TableLoadingOverlay.jsx';
 import SearchableSelect from '../components/SearchableSelect.jsx';
@@ -16,6 +17,11 @@ import RemarkModal from '../components/RemarkModal.jsx';
 
 const TYPES = ['hot', 'medium', 'cold'];
 const STAGES = ['new', 'contacted', 'followup', 'converted', 'lost'];
+const CHANNELS = [
+  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'sms', label: 'SMS' },
+  { value: 'email', label: 'Email' },
+];
 const PER_PAGE = 20;
 
 const TYPE_STYLES = {
@@ -47,6 +53,8 @@ export default function Listings() {
     category: searchParams.get('category') || '',
     city: searchParams.get('city') || '',
     missingOnly: searchParams.get('missingOnly') === '1',
+    contactStatus: searchParams.get('contactStatus') || '', // '' | email | mobile | both | complete
+    premium: searchParams.get('premium') || '',             // '' | premium | non
     leadType: searchParams.get('leadType') || '',
     stage: searchParams.get('stage') || '',
     ownerId: searchParams.get('ownerId') || '',
@@ -60,6 +68,7 @@ export default function Listings() {
   const [selected, setSelected] = useState(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkLeadIds, setBulkLeadIds] = useState([]);
+  const [channels, setChannels] = useState(() => new Set(['whatsapp'])); // WhatsApp / SMS / Email multi-picker for the table's Send actions
   const [remarkRow, setRemarkRow] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -77,22 +86,33 @@ export default function Listings() {
           leadType: filters.leadType, stage: filters.stage, ownerId: filters.ownerId,
           missingOnly: filters.missingOnly, category: filters.category, city: filters.city, search: filters.search,
         });
-        setRows(leads.map((l) => ({
-          DirectoryID: l.directory_id,
-          CompanyName: l.directory?.CompanyName,
-          CategoryName: l.directory?.CategoryName,
-          CurrentCity: l.directory?.CurrentCity,
-          ContactName: l.directory?.ContactName,
-          EmailAddress: l.directory?.EmailAddress,
-          MobileNumber: l.directory?.MobileNumber,
-          is_missing: l.is_flagged_missing || (!l.directory?.EmailAddress && !l.directory?.MobileNumber),
-          lead_id: l.id, lead_type: l.lead_type, stage: l.stage, owner_user_id: l.owner_user_id,
-          owner_name: l.owner?.name, remark: l.remark, batch_label: l.batch_label, followup_count: l.followup_count,
-        })));
-        setTotal(leads.length);
+        let mapped = leads.map((l) => {
+          const d = l.directory || {};
+          const mk = api.missingKind(d);
+          return {
+            DirectoryID: l.directory_id,
+            CompanyName: d.CompanyName,
+            CategoryName: d.CategoryName,
+            CurrentCity: d.CurrentCity,
+            ContactName: d.ContactName,
+            EmailAddress: d.EmailAddress,
+            MobileNumber: d.MobileNumber,
+            is_premium: d.is_premium,
+            missing_kind: mk,
+            is_missing: l.is_flagged_missing || mk === 'both',
+            lead_id: l.id, lead_type: l.lead_type, stage: l.stage, owner_user_id: l.owner_user_id,
+            owner_name: l.owner?.name, remark: l.remark, batch_label: l.batch_label, followup_count: l.followup_count,
+          };
+        });
+        if (filters.contactStatus === 'complete') mapped = mapped.filter((r) => r.missing_kind === '');
+        else if (filters.contactStatus) mapped = mapped.filter((r) => r.missing_kind === filters.contactStatus);
+        if (filters.premium === 'premium') mapped = mapped.filter((r) => r.is_premium);
+        else if (filters.premium === 'non') mapped = mapped.filter((r) => !r.is_premium);
+        setRows(mapped);
+        setTotal(mapped.length);
       } else {
         const [dirRes, leads] = await Promise.all([
-          api.listDirectory({ search: filters.search, category: filters.category, city: filters.city, missingOnly: filters.missingOnly, page, perPage: PER_PAGE }),
+          api.listDirectory({ search: filters.search, category: filters.category, city: filters.city, missingOnly: filters.missingOnly, contactStatus: filters.contactStatus, premium: filters.premium, page, perPage: PER_PAGE }),
           api.listLeads({ category: filters.category, city: filters.city, search: filters.search }),
         ]);
         const leadByDirId = new Map(leads.map((l) => [l.directory_id, l]));
@@ -100,6 +120,7 @@ export default function Listings() {
           const l = leadByDirId.get(r.DirectoryID);
           return {
             ...r,
+            is_missing: r.is_missing ?? (r.missing_kind === 'both'),
             lead_id: l?.id ?? r.lead_id ?? null,
             lead_type: l?.lead_type ?? null,
             stage: l?.stage ?? null,
@@ -207,6 +228,50 @@ export default function Listings() {
     }
   }
 
+  // Individual send (item 3/4): message one listing on its own.
+  async function sendToRow(row) {
+    setLoading(true);
+    try {
+      const leadId = await ensureLead(row);
+      setBulkLeadIds([leadId]);
+      setBulkOpen(true);
+    } catch (e) {
+      alert('Could not prepare this listing: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Bulk-by-category / whole-filter send (item 3/4): message every
+  // listing that matches the current filters, not just this page.
+  async function sendToAllMatching() {
+    setLoading(true);
+    try {
+      let matching = rows;
+      if (!leadFilterActive) {
+        // Pull every matching directory row (not just the 20 on screen).
+        const res = await api.listDirectory({
+          search: filters.search, category: filters.category, city: filters.city,
+          missingOnly: filters.missingOnly, contactStatus: filters.contactStatus,
+          premium: filters.premium, page: 1, perPage: 10000,
+        });
+        matching = res.rows;
+      }
+      if (matching.length === 0) { alert('No listings match the current filters.'); return; }
+      const scope = filters.category ? `category "${filters.category}"` : 'the current filter';
+      if (!window.confirm(`Prepare a bulk message to all ${matching.length} listing(s) in ${scope}?`)) return;
+      const leadIds = [];
+      for (const row of matching) leadIds.push(await ensureLead(row));
+      setBulkLeadIds(leadIds);
+      setBulkOpen(true);
+    } catch (e) {
+      alert('Could not prepare the category: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const channelLabel = CHANNELS.filter((c) => channels.has(c.value)).map((c) => c.label).join(' + ') || 'WhatsApp';
   const totalPages = leadFilterActive ? 1 : Math.max(1, Math.ceil(total / PER_PAGE));
 
   return (
@@ -217,9 +282,15 @@ export default function Listings() {
           <p className="text-slate-500 text-sm">Every directory listing, workable directly — no separate "convert to lead" step. Rows missing an email or mobile are flagged.</p>
         </div>
         {can('message.bulk_send') && (
-          <button className="btn btn-primary shrink-0 self-start sm:self-auto" disabled={selected.size === 0} onClick={openBulkSend}>
-            Bulk send ({selected.size})
-          </button>
+          <div className="flex flex-wrap gap-2 shrink-0 self-start sm:self-auto items-center">
+            <ChannelMultiSelect value={channels} onChange={setChannels} />
+            <button className="btn btn-secondary" onClick={sendToAllMatching} title="Message everyone matching the current filters via the selected channel">
+              Send to all {leadFilterActive ? rows.length : total}{filters.category ? ` in ${filters.category}` : ''}
+            </button>
+            <button className="btn btn-primary" disabled={selected.size === 0} onClick={openBulkSend}>
+              Bulk send ({selected.size})
+            </button>
+          </div>
         )}
       </div>
 
@@ -251,6 +322,18 @@ export default function Listings() {
           <option value="">All owners</option>
           {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
         </select>
+        <select className="input max-w-[190px]" value={filters.contactStatus} onChange={(e) => setFilter('contactStatus', e.target.value)} title="Filter by which contact detail is missing">
+          <option value="">Any contact status</option>
+          <option value="complete">Has email & mobile</option>
+          <option value="email">Email missing</option>
+          <option value="mobile">Mobile missing</option>
+          <option value="both">Email & mobile missing</option>
+        </select>
+        <select className="input max-w-[160px]" value={filters.premium} onChange={(e) => setFilter('premium', e.target.value)} title="Filter premium vs non-premium listings">
+          <option value="">All listings</option>
+          <option value="premium">Premium only</option>
+          <option value="non">Non-premium only</option>
+        </select>
         <label className="flex items-center gap-2 text-sm ml-auto">
           <input type="checkbox" checked={filters.missingOnly} onChange={(e) => setFilter('missingOnly', e.target.checked)} />
           Missing contact only
@@ -278,7 +361,10 @@ export default function Listings() {
                     {r.CompanyName || <span className="italic text-red-400 font-normal">(no name)</span>}
                   </button>
                   <div className="text-xs text-slate-400">{r.CategoryName} · {r.CurrentCity}</div>
-                  {r.is_missing && <div className="mt-1"><MissingBadge /></div>}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {r.is_premium && <PremiumBadge />}
+                    <MissingFieldBadge kind={r.missing_kind} />
+                  </div>
                 </div>
               </div>
 
@@ -325,6 +411,9 @@ export default function Listings() {
                   {r.owner_name || 'No owner'} · {r.followup_count || 0} follow-up{r.followup_count === 1 ? '' : 's'}
                 </div>
                 <div className="flex gap-2">
+                  {can('message.bulk_send') && (
+                    <button className="btn btn-secondary btn-sm" title={`Send ${channelLabel} to this listing`} onClick={() => sendToRow(r)}>Send {channelLabel}</button>
+                  )}
                   {(can('lead.edit') || can('lead.create')) && (
                     <button className="btn btn-secondary btn-sm" onClick={() => setRemarkRow(r)}>💬</button>
                   )}
@@ -367,7 +456,10 @@ export default function Listings() {
                     {r.CompanyName || <span className="italic text-red-400 font-normal">(no name)</span>}
                   </button>
                   <div className="text-xs text-slate-400 font-normal">{r.CategoryName}</div>
-                  {r.is_missing && <div className="mt-1"><MissingBadge /></div>}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {r.is_premium && <PremiumBadge />}
+                    <MissingFieldBadge kind={r.missing_kind} />
+                  </div>
                 </td>
                 <td className="px-4 py-3.5 text-slate-500 whitespace-nowrap">{r.CurrentCity}</td>
                 <td className="px-4 py-3.5 whitespace-nowrap">
@@ -424,7 +516,12 @@ export default function Listings() {
                   )}
                 </td>
                 <td className="px-4 py-3.5 text-slate-500">{r.followup_count || 0}</td>
-                <td className="px-4 py-3.5 text-right"><button className="btn btn-secondary btn-sm" onClick={() => openRow(r)}>Open</button></td>
+                <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                  {can('message.bulk_send') && (
+                    <button className="btn btn-secondary btn-sm mr-2" title={`Send ${channelLabel} to this listing`} onClick={() => sendToRow(r)}>Send {channelLabel}</button>
+                  )}
+                  <button className="btn btn-secondary btn-sm" onClick={() => openRow(r)}>Open</button>
+                </td>
               </tr>
             ))}
             {!loading && rows.length === 0 && (
@@ -448,6 +545,7 @@ export default function Listings() {
       {bulkOpen && (
         <BulkSendModal
           leadIds={bulkLeadIds}
+          initialChannels={[...channels]}
           onClose={() => setBulkOpen(false)}
           onSent={() => { setBulkOpen(false); setSelected(new Set()); load(); }}
         />

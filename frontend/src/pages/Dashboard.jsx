@@ -4,14 +4,26 @@ import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import Spinner from '../components/Spinner.jsx';
 
+const TONES = { slate: 'text-slate-900', red: 'text-red-600', amber: 'text-amber-600', orange: 'text-orange-600', blue: 'text-blue-600', green: 'text-green-600' };
+
 function StatCard({ label, value, sub, tone = 'slate' }) {
-  const tones = { slate: 'text-slate-900', red: 'text-red-600', amber: 'text-amber-600', blue: 'text-blue-600', green: 'text-green-600' };
   return (
     <div className="card p-5">
       <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</div>
-      <div className={`text-3xl font-bold mt-1 ${tones[tone]}`}>{value}</div>
+      <div className={`text-3xl font-bold mt-1 ${TONES[tone]}`}>{value}</div>
       {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
     </div>
+  );
+}
+
+// Clickable stat: jumps to Listings pre-filtered to the matching case.
+function LinkStatCard({ label, value, sub, tone = 'slate', to }) {
+  return (
+    <Link to={to} className="card p-5 hover:border-slate-300 hover:shadow-sm transition group block">
+      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</div>
+      <div className={`text-3xl font-bold mt-1 ${TONES[tone]}`}>{value == null ? '—' : value}</div>
+      <div className="text-xs text-slate-400 mt-1 group-hover:text-slate-600">{sub} →</div>
+    </Link>
   );
 }
 
@@ -30,11 +42,21 @@ export default function Dashboard() {
       <h1 className="text-2xl font-bold mb-1">Welcome back, {user?.name?.split(' ')[0]}</h1>
       <p className="text-slate-500 mb-6">Here's what's happening across your directory and leads.</p>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <StatCard label="Total Listings" value={stats.totalListings} />
-        <StatCard label="Missing Email/Mobile" value={stats.missingCount} tone="red" sub="Flagged listings" />
         <StatCard label="Hot Leads" value={stats.leadsByType.hot} tone="red" />
         <StatCard label="Follow-ups Today" value={stats.followupsToday} tone="amber" />
+        <StatCard label="Messages Sent" value={stats.messagesSentTotal} tone="green" />
+      </div>
+
+      <div className="mb-2 text-xs font-semibold text-slate-400 uppercase tracking-wide">Missing contact details — click to see those listings</div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <LinkStatCard label="Email missing" value={stats.missingEmailCount} tone="amber"
+          sub="Has mobile, no email" to="/listings?contactStatus=email" />
+        <LinkStatCard label="Mobile missing" value={stats.missingMobileCount} tone="orange"
+          sub="Has email, no mobile" to="/listings?contactStatus=mobile" />
+        <LinkStatCard label="Email & mobile missing" value={stats.missingBothCount} tone="red"
+          sub="Neither on file" to="/listings?contactStatus=both" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
