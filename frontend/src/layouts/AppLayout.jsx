@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 const NAV = [
   { to: '/', label: 'Dashboard', icon: '▦', perm: null },
   { to: '/listings', label: 'Listings', icon: '☰', perm: 'directory.view' },
+  { to: '/campaigns', label: 'Campaigns', icon: '✉', perm: ['campaign.view', 'message.bulk_send'] },
   { to: '/users', label: 'Users & Roles', icon: '⚙', perm: 'user.manage' },
   { to: '/settings', label: 'Settings', icon: '⚙️', perm: null },
 ];
@@ -13,7 +14,7 @@ export default function AppLayout() {
   const { user, logout, can } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const items = NAV.filter((n) => !n.perm || can(n.perm));
+  const items = NAV.filter((n) => !n.perm || [].concat(n.perm).some((p) => can(p)));
 
   const sidebarContent = (
     <>
