@@ -5,6 +5,7 @@
 // (camelCase-ish, unwrapped arrays), so page components never touch raw
 // backend shapes directly.
 import { http } from './client.js';
+import { demo as campaignsMock } from './campaignsMock.js';
 
 function rowsOf(data) {
   return data?.rows ?? (Array.isArray(data) ? data : []);
@@ -240,4 +241,125 @@ export async function filterMeta({ category = '', city = '' } = {}) {
   const categories = (data.categories ?? []).map((c) => (typeof c === 'string' ? c : c.CategoryName));
   const cities = (data.cities ?? []).map((c) => (typeof c === 'string' ? c : c.CurrentCity ?? c.CityName));
   return { categories, cities };
+}
+
+
+// ---------------------------------------------------------------------
+// Campaigns (bulk send by category + live status).
+// Contract: backend/API_CHANGE_campaigns.md. While those endpoints don't
+// exist yet, collection calls (list/create/preview) fall back to a clearly
+// labelled DEMO mode (api/campaignsMock.js) so the UI is usable now; the
+// moment the real API answers, it is used instead — no UI change needed.
+// ---------------------------------------------------------------------
+let campaignsDemo = false;
+export function campaignsInDemoMode() { return campaignsDemo; }
+
+// The not-yet-built route answers 404/405, or with no readable response
+// at all (the 404 page carries no CORS headers, so the browser reports a
+// network error). Real errors (401/403/422/5xx) are NOT treated as "missing".
+function isMissingEndpoint(err) {
+  const s = err?.response?.status;
+  return s === 404 || s === 405 || (!err?.response && (err?.code === 'ERR_NETWORK' || err?.message === 'Network Error'));
+}
+
+async function viaCampaignsApi(real, fallback) {
+  try {
+    const out = await real();
+    campaignsDemo = false;
+    return out;
+  } catch (err) {
+    if (!isMissingEndpoint(err)) throw err;
+    campaignsDemo = true;
+    return fallback();
+  }
+}
+
+const COUNT_KEYS = ['total', 'queued', 'sent', 'delivered', 'failed', 'skipped'];
+function normalizeCounts(c) {
+  const out = {};
+  COUNT_KEYS.forEach((k) => { out[k] = Number(c?.[k] ?? 0) || 0; }); // MySQL often returns counts as strings
+  return out;
+}
+
+function parseList(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') { try { const j = JSON.parse(v); return Array.isArray(j) ? j : []; } catch { return []; } }
+  return [];
+}
+
+export function normalizeCampaign(c) {
+  if (!c) return c;
+  const by_channel = {};
+  Object.entries(c.by_channel || {}).forEach(([ch, v]) => { by_channel[ch] = normalizeCounts(v); });
+  let totals = c.totals ? normalizeCounts(c.totals) : null;
+  if (!totals) {
+    totals = normalizeCounts({});
+    Object.values(by_channel).forEach((b) => COUNT_KEYS.forEach((k) => { totals[k] += b[k]; }));
+  }
+  const channels = parseList(c.channels);
+  return {
+    ...c,
+    categories: parseList(c.categories),
+    channels: channels.length ? channels : Object.keys(by_channel),
+    filters: c.filters || { premium: 'all', contact_status: '' },
+    audience_total: Number(c.audience_total ?? 0) || 0,
+    by_channel, totals,
+  };
+}
+
+export async function listCampaigns({ page = 1, perPage = 20, status = '' } = {}) {
+  const res = await viaCampaignsApi(
+    async () => (await http.get('/campaigns', { params: { page, per_page: perPage, status } })).data,
+    () => campaignsMock.list({ page, perPage }),
+  );
+  return {
+    rows: rowsOf(res).map(normalizeCampaign),
+    total: Number(res.total ?? 0),
+    page: Number(res.page ?? page),
+    perPage: Number(res.per_page ?? res.perPage ?? perPage),
+  };
+}
+
+export async function getCampaign(id) {
+  const data = campaignsDemo ? campaignsMock.get(id) : (await http.get(`/campaigns/${id}`)).data;
+  return normalizeCampaign(data.campaign ?? data);
+}
+
+async function countListings(categories, city) {
+  const totals = await Promise.all(categories.map((category) =>
+    http.get('/directory', { params: { category, city: city || '', page: 1, perPage: 1 } }).then((r) => Number(r.data?.total ?? 0)).catch(() => 0)));
+  return totals.reduce((a, b) => a + b, 0);
+}
+
+// Audience size before sending. Demo mode can only give a listing count
+// (overlap between categories isn't de-duplicated there) — no per-channel reachability.
+export async function previewCampaign(payload) {
+  return viaCampaignsApi(
+    async () => (await http.post('/campaigns/preview', payload)).data,
+    async () => ({ listings: await countListings(payload.categories, payload.city), by_channel: null, demo: true }),
+  );
+}
+
+export async function createCampaign(payload, user) {
+  const data = await viaCampaignsApi(
+    async () => (await http.post('/campaigns', payload)).data,
+    async () => campaignsMock.create(payload, await countListings(payload.categories, payload.city), user),
+  );
+  return normalizeCampaign(data.campaign ?? data);
+}
+
+export async function cancelCampaign(id) {
+  const data = campaignsDemo ? campaignsMock.cancel(id) : (await http.post(`/campaigns/${id}/cancel`)).data;
+  return normalizeCampaign(data.campaign ?? data);
+}
+
+export async function retryFailedCampaign(id) {
+  const data = campaignsDemo ? campaignsMock.retryFailed(id) : (await http.post(`/campaigns/${id}/retry-failed`)).data;
+  return { campaign: normalizeCampaign(data.campaign ?? data), requeued: Number(data.requeued ?? 0) };
+}
+
+export async function listCampaignRecipients(id, { channel = '', status = '', page = 1, perPage = 50 } = {}) {
+  const data = campaignsDemo ? campaignsMock.recipients()
+    : (await http.get(`/campaigns/${id}/recipients`, { params: { channel, status, page, per_page: perPage } })).data;
+  return { rows: rowsOf(data), total: Number(data.total ?? 0), demo: !!data.demo };
 }
