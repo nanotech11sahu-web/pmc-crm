@@ -1,4 +1,4 @@
-import { http } from '../api/client.js';
+import { SITE_ORIGIN } from '../api/client.js';
 
 // Read-only "what will be sent" panel. The messages are FIXED on the
 // server — the user never picks or types anything — so this is purely
@@ -6,9 +6,6 @@ import { http } from '../api/client.js';
 // below is the abridged copy supplied by the backend team; the exact text
 // lives on the server.
 
-const SITE_ORIGIN = (() => {
-  try { return new URL(http.defaults.baseURL, window.location.href).origin; } catch { return ''; }
-})();
 const SAMPLE_CARD = `${SITE_ORIGIN}/assets/frontend/images/pmc-campaign-sample-card.jpg`;
 
 function CardImage() {
@@ -63,7 +60,15 @@ function Email() {
   );
 }
 
-const VIEWS = { whatsapp: ['WhatsApp', WhatsApp], sms: ['SMS', Sms], email: ['Email', Email] };
+function Voice() {
+  return (
+    <div className="rounded-lg bg-slate-100 border border-slate-200 px-3 py-2 text-sm text-slate-700 max-w-sm">
+      Each reachable listing gets an automated phone call that plays the fixed, pre-recorded PMC message.
+    </div>
+  );
+}
+
+const VIEWS = { whatsapp: ['WhatsApp', WhatsApp], sms: ['SMS', Sms], email: ['Email', Email], voice: ['Voice call', Voice] };
 
 export default function CampaignMessagePreview({ channels }) {
   if (channels.length === 0) return null;

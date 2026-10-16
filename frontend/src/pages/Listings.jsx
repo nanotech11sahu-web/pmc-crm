@@ -3,8 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { StageBadge, MissingBadge, MissingFieldBadge, PremiumBadge } from '../components/Badge.jsx';
-import BulkSendModal from '../components/BulkSendModal.jsx';
-import ChannelMultiSelect from '../components/ChannelMultiSelect.jsx';
+import CallButton from '../components/CallButton.jsx';
+import MissingDetailsResult from '../components/MissingDetailsResult.jsx';
+import { runMissingDetails, KIND_LABEL } from '../utils/missingDetails.js';
 import InlineContactCell from '../components/InlineContactCell.jsx';
 import TableLoadingOverlay from '../components/TableLoadingOverlay.jsx';
 import SearchableSelect from '../components/SearchableSelect.jsx';
@@ -17,11 +18,6 @@ import RemarkModal from '../components/RemarkModal.jsx';
 
 const TYPES = ['hot', 'medium', 'cold'];
 const STAGES = ['new', 'contacted', 'followup', 'converted', 'lost'];
-const CHANNELS = [
-  { value: 'whatsapp', label: 'WhatsApp' },
-  { value: 'sms', label: 'SMS' },
-  { value: 'email', label: 'Email' },
-];
 const PER_PAGE = 20;
 
 const TYPE_STYLES = {
@@ -66,9 +62,8 @@ export default function Listings() {
   const [users, setUsers] = useState([]);
   const [meta, setMeta] = useState({ categories: [], cities: [] });
   const [selected, setSelected] = useState(new Set());
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkLeadIds, setBulkLeadIds] = useState([]);
-  const [channels, setChannels] = useState(() => new Set(['whatsapp'])); // WhatsApp / SMS / Email multi-picker for the table's Send actions
+  const [missingBusy, setMissingBusy] = useState(false);
+  const [missingResult, setMissingResult] = useState(null);
   const [remarkRow, setRemarkRow] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -98,6 +93,7 @@ export default function Listings() {
             EmailAddress: d.EmailAddress,
             MobileNumber: d.MobileNumber,
             is_premium: d.is_premium,
+            PhoneNumber: d.PhoneNumber,
             missing_kind: mk,
             is_missing: l.is_flagged_missing || mk === 'both',
             lead_id: l.id, lead_type: l.lead_type, stage: l.stage, owner_user_id: l.owner_user_id,
@@ -210,68 +206,49 @@ export default function Listings() {
     navigate(`/listings/${row.DirectoryID}`, { state: { leadId: row.lead_id } });
   }
 
-  async function openBulkSend() {
-    setLoading(true);
+  // "Missing details" WhatsApp: the backend picks the approved template per
+  // listing state; we just hand it the listings (grouped by what each is missing).
+  async function requestMissing(list) {
+    setMissingBusy(true);
     try {
-      const rowsByDirId = new Map(rows.map((r) => [r.DirectoryID, r]));
-      const leadIds = [];
-      for (const dirId of selected) {
-        const row = rowsByDirId.get(dirId);
-        leadIds.push(await ensureLead(row));
-      }
-      setBulkLeadIds(leadIds);
-      setBulkOpen(true);
+      const result = await runMissingDetails(list, { confirm: list.length > 1 });
+      if (result) { setMissingResult(result); setSelected(new Set()); load(); }
     } catch (e) {
-      alert('Could not prepare selected rows: ' + e.message);
+      alert(e.response?.data?.error || e.message);
     } finally {
-      setLoading(false);
+      setMissingBusy(false);
     }
   }
 
-  // Individual send (item 3/4): message one listing on its own.
-  async function sendToRow(row) {
-    setLoading(true);
-    try {
-      const leadId = await ensureLead(row);
-      setBulkLeadIds([leadId]);
-      setBulkOpen(true);
-    } catch (e) {
-      alert('Could not prepare this listing: ' + e.message);
-    } finally {
-      setLoading(false);
-    }
+  function requestMissingSelected() {
+    requestMissing(rows.filter((r) => selected.has(r.DirectoryID)));
   }
 
-  // Bulk-by-category / whole-filter send (item 3/4): message every
-  // listing that matches the current filters, not just this page.
-  async function sendToAllMatching() {
-    setLoading(true);
+  // Every listing matching the current filters (not just this page) — only offered
+  // when filtered to a missing-details state, so the audience is exactly those listings.
+  async function requestMissingAllMatching() {
+    setMissingBusy(true);
     try {
-      let matching = rows;
+      let all = rows;
       if (!leadFilterActive) {
-        // Pull every matching directory row (not just the 20 on screen).
-        const res = await api.listDirectory({
-          search: filters.search, category: filters.category, city: filters.city,
-          missingOnly: filters.missingOnly, contactStatus: filters.contactStatus,
-          premium: filters.premium, page: 1, perPage: 10000,
-        });
-        matching = res.rows;
+        all = [];
+        for (let pg = 1; pg <= 40; pg += 1) {
+          const res = await api.listDirectory({
+            search: filters.search, category: filters.category, city: filters.city,
+            missingOnly: filters.missingOnly, contactStatus: filters.contactStatus, premium: filters.premium, page: pg, perPage: 500,
+          });
+          all.push(...res.rows);
+          if (all.length >= res.total || res.rows.length === 0) break;
+        }
       }
-      if (matching.length === 0) { alert('No listings match the current filters.'); return; }
-      const scope = filters.category ? `category "${filters.category}"` : 'the current filter';
-      if (!window.confirm(`Prepare a bulk message to all ${matching.length} listing(s) in ${scope}?`)) return;
-      const leadIds = [];
-      for (const row of matching) leadIds.push(await ensureLead(row));
-      setBulkLeadIds(leadIds);
-      setBulkOpen(true);
+      setMissingBusy(false);
+      await requestMissing(all);
     } catch (e) {
-      alert('Could not prepare the category: ' + e.message);
-    } finally {
-      setLoading(false);
+      setMissingBusy(false);
+      alert(e.response?.data?.error || e.message);
     }
   }
 
-  const channelLabel = CHANNELS.filter((c) => channels.has(c.value)).map((c) => c.label).join(' + ') || 'WhatsApp';
   const totalPages = leadFilterActive ? 1 : Math.max(1, Math.ceil(total / PER_PAGE));
 
   return (
@@ -281,21 +258,24 @@ export default function Listings() {
           <h1 className="text-2xl font-bold">Listings</h1>
           <p className="text-slate-500 text-sm">Every directory listing, workable directly — no separate "convert to lead" step. Rows missing an email or mobile are flagged.</p>
         </div>
-        {can('message.bulk_send') && (
+        {can('message.bulk_send') && (selected.size > 0 || KIND_LABEL[filters.contactStatus] || filters.category) && (
           <div className="flex flex-wrap gap-2 shrink-0 self-start sm:self-auto items-center">
-            <ChannelMultiSelect value={channels} onChange={setChannels} />
-            <button className="btn btn-secondary" onClick={sendToAllMatching} title="Message everyone matching the current filters via the selected channel">
-              Send to all {leadFilterActive ? rows.length : total}{filters.category ? ` in ${filters.category}` : ''}
-            </button>
-            <button className="btn btn-primary" disabled={selected.size === 0} onClick={openBulkSend}>
-              Bulk send ({selected.size})
-            </button>
+            {selected.size > 0 && (
+              <button className="btn btn-primary" disabled={missingBusy} onClick={requestMissingSelected} title="Sends the approved WhatsApp that matches what each selected business is missing">
+                {missingBusy ? 'Sending…' : `Send WhatsApp (${selected.size} selected)`}
+              </button>
+            )}
+            {(KIND_LABEL[filters.contactStatus] || filters.category) && (
+              <button className="btn btn-secondary" disabled={missingBusy} onClick={requestMissingAllMatching} title="Sends the approved WhatsApp to every matching listing that is missing details (listings with complete details are left out)">
+                {missingBusy ? 'Working…' : `Send WhatsApp · all ${leadFilterActive ? rows.length : total}${filters.category ? ` in ${filters.category}` : ''}${KIND_LABEL[filters.contactStatus] ? ` (${KIND_LABEL[filters.contactStatus].toLowerCase()})` : ''}`}
+              </button>
+            )}
           </div>
         )}
       </div>
 
       <div className="card p-4 mb-4 flex flex-wrap gap-3 items-center">
-        <input className="input max-w-xs" placeholder="Search company or contact..." value={filters.search} onChange={(e) => setFilter('search', e.target.value)} />
+        <input className="input max-w-xs" placeholder="Search company, contact, mobile or phone…" value={filters.search} onChange={(e) => setFilter('search', e.target.value)} />
         <SearchableSelect
           className="w-48"
           placeholder="All categories"
@@ -411,9 +391,10 @@ export default function Listings() {
                   {r.owner_name || 'No owner'} · {r.followup_count || 0} follow-up{r.followup_count === 1 ? '' : 's'}
                 </div>
                 <div className="flex gap-2">
-                  {can('message.bulk_send') && (
-                    <button className="btn btn-secondary btn-sm" title={`Send ${channelLabel} to this listing`} onClick={() => sendToRow(r)}>Send {channelLabel}</button>
+                  {can('message.send_whatsapp') && (
+                    <button className="btn btn-secondary btn-sm" disabled={missingBusy || !r.missing_kind} title={r.missing_kind ? `Sends the approved WhatsApp for: ${KIND_LABEL[r.missing_kind].toLowerCase()}` : 'Contact details are complete — no missing-details message applies'} onClick={() => requestMissing([r])}>Send WhatsApp</button>
                   )}
+                  <CallButton row={r} />
                   {(can('lead.edit') || can('lead.create')) && (
                     <button className="btn btn-secondary btn-sm" onClick={() => setRemarkRow(r)}>💬</button>
                   )}
@@ -517,9 +498,10 @@ export default function Listings() {
                 </td>
                 <td className="px-4 py-3.5 text-slate-500">{r.followup_count || 0}</td>
                 <td className="px-4 py-3.5 text-right whitespace-nowrap">
-                  {can('message.bulk_send') && (
-                    <button className="btn btn-secondary btn-sm mr-2" title={`Send ${channelLabel} to this listing`} onClick={() => sendToRow(r)}>Send {channelLabel}</button>
+                  {can('message.send_whatsapp') && (
+                    <button className="btn btn-secondary btn-sm mr-2" disabled={missingBusy || !r.missing_kind} title={r.missing_kind ? `Sends the approved WhatsApp for: ${KIND_LABEL[r.missing_kind].toLowerCase()}` : 'Contact details are complete — no missing-details message applies'} onClick={() => requestMissing([r])}>Send WhatsApp</button>
                   )}
+                  <CallButton row={r} className="btn btn-secondary btn-sm mr-2" />
                   <button className="btn btn-secondary btn-sm" onClick={() => openRow(r)}>Open</button>
                 </td>
               </tr>
@@ -542,14 +524,7 @@ export default function Listings() {
         </div>
       )}
 
-      {bulkOpen && (
-        <BulkSendModal
-          leadIds={bulkLeadIds}
-          initialChannels={[...channels]}
-          onClose={() => setBulkOpen(false)}
-          onSent={() => { setBulkOpen(false); setSelected(new Set()); load(); }}
-        />
-      )}
+      {missingResult && <MissingDetailsResult result={missingResult} onClose={() => setMissingResult(null)} />}
 
       {remarkRow && (
         <RemarkModal

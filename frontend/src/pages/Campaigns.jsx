@@ -10,7 +10,7 @@ import Spinner from '../components/Spinner.jsx';
 
 const POLL_MS = 60_000;
 const PER_PAGE = 20;
-const CHANNEL_LABEL = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email' };
+const CHANNEL_LABEL = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email', voice: 'Voice call' };
 
 const STATUS = {
   queued: { label: 'Queued', cls: 'bg-slate-100 text-slate-600' },
@@ -94,7 +94,7 @@ function CampaignCard({ c, onOpen }) {
       </div>
 
       {c.channels.length > 1 && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
           {c.channels.map((ch) => {
             const b = c.by_channel[ch];
             if (!b) return null;

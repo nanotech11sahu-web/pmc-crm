@@ -5,9 +5,9 @@ import MultiSearchSelect from './MultiSearchSelect.jsx';
 import SearchableSelect from './SearchableSelect.jsx';
 import CampaignMessagePreview from './CampaignMessagePreview.jsx';
 
-const CHANNELS = ['whatsapp', 'sms', 'email'];
-const LABEL = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email' };
-const PERM_FOR = { whatsapp: 'message.send_whatsapp', sms: 'message.send_sms', email: 'message.send_email' };
+const CHANNELS = ['whatsapp', 'sms', 'email', 'voice'];
+const LABEL = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email', voice: 'Voice call' };
+const PERM_FOR = { whatsapp: 'message.send_whatsapp', sms: 'message.send_sms', email: 'message.send_email', voice: 'message.send_voice' };
 // "New campaign" form: pick one or many categories, one or many channels
 // (each sends its own fixed message set up on the server), see the audience, then send. The
 // campaign is saved straight away and tracked on the Campaigns page.
@@ -122,11 +122,12 @@ export default function CampaignForm({ onClose, onCreated }) {
                 <label key={c} className={`flex items-center gap-2 border rounded-lg px-3 py-2 text-sm cursor-pointer ${channels.includes(c) ? 'border-slate-900 bg-slate-50' : 'border-slate-200'} ${!can(PERM_FOR[c]) ? 'opacity-50 cursor-not-allowed' : ''}`}>
                   <input type="checkbox" checked={channels.includes(c)} disabled={!can(PERM_FOR[c])} onChange={() => toggleChannel(c)} />
                   {LABEL[c]}
+                  {c === 'voice' && !can(PERM_FOR[c]) && <span className="text-xs text-slate-400">(not enabled yet)</span>}
                 </label>
               ))}
             </div>
             {!permsOk && <div className="text-xs text-red-500 mt-1">You don't have permission for one of the selected channels.</div>}
-            <div className="text-xs text-slate-400 mt-2">Each channel sends its own fixed, pre-approved message — there's nothing to write or choose here.</div>
+            <div className="text-xs text-slate-400 mt-2">Each channel sends its own fixed, pre-approved message (voice call = a fixed automated call) — there's nothing to write or choose here.</div>
           </div>
 
           <CampaignMessagePreview channels={channels} />

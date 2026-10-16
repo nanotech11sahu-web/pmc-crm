@@ -3,8 +3,10 @@ import { useParams, useLocation, Link } from 'react-router-dom';
 import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { LeadTypeBadge, StageBadge, MissingFieldBadge, PremiumBadge } from '../components/Badge.jsx';
+import CallButton from '../components/CallButton.jsx';
+import MissingDetailsResult from '../components/MissingDetailsResult.jsx';
+import { runMissingDetails } from '../utils/missingDetails.js';
 import Spinner from '../components/Spinner.jsx';
-import BulkSendModal from '../components/BulkSendModal.jsx';
 import EditableDetailRow from '../components/EditableDetailRow.jsx';
 
 // tbl_directory columns that are internal/computed or already shown
@@ -79,7 +81,8 @@ export default function LeadDetail() {
   const [batchLabel, setBatchLabel] = useState('');
   const [logForm, setLogForm] = useState({ activity_type: 'call', outcome: '', notes: '' });
   const [saving, setSaving] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
+  const [missingBusy, setMissingBusy] = useState(false);
+  const [missingResult, setMissingResult] = useState(null);
 
   // Every listing behaves as a lead: if we weren't handed a leadId (e.g.
   // a direct URL visit, a bookmark, or a page refresh — React Router
@@ -119,6 +122,20 @@ export default function LeadDetail() {
     load();
   }
 
+  // Ask this business (by WhatsApp) for the contact details it is missing — the
+  // backend chooses the approved template from the listing's state.
+  async function askMissingDetails() {
+    setMissingBusy(true);
+    try {
+      const result = await runMissingDetails([{ DirectoryID: dir.DirectoryID ?? directoryId, CompanyName: dir.CompanyName, missing_kind: api.missingKind(dir) }], { confirm: false });
+      if (result) { setMissingResult(result); load(); }
+    } catch (e) {
+      alert(e.response?.data?.error || e.message);
+    } finally {
+      setMissingBusy(false);
+    }
+  }
+
   async function saveRemark() {
     setSaving(true);
     try { await updateField({ remark, batch_label: batchLabel }); } finally { setSaving(false); }
@@ -151,9 +168,17 @@ export default function LeadDetail() {
         <div className="flex flex-wrap items-center gap-2">
           <LeadTypeBadge type={lead.lead_type} />
           <StageBadge stage={lead.stage} />
-          {can('message.bulk_send') && (
-            <button className="btn btn-primary btn-sm" onClick={() => setSendOpen(true)}>Send WhatsApp / SMS / Email</button>
+          {can('message.send_whatsapp') && (
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={missingBusy || !api.missingKind(dir || {})}
+              onClick={askMissingDetails}
+              title={api.missingKind(dir || {}) ? 'Sends the approved WhatsApp that matches what this listing is missing' : 'Contact details are complete — no missing-details message applies'}
+            >
+              {missingBusy ? 'Sending…' : 'Send WhatsApp'}
+            </button>
           )}
+          <CallButton row={dir} className="btn btn-secondary btn-sm" />
         </div>
       </div>
 
@@ -238,7 +263,8 @@ export default function LeadDetail() {
             <div className="space-y-3 text-sm">
               <div>
                 <label className="text-xs text-slate-400 block mb-1">Type</label>
-                <select className="input" value={lead.lead_type} disabled={!can('lead.edit')} onChange={(e) => updateField({ lead_type: e.target.value })}>
+                <select className="input" value={lead.lead_type || ''} disabled={!can('lead.edit')} onChange={(e) => updateField({ lead_type: e.target.value })}>
+                  {!lead.lead_type && <option value="" disabled>Not set</option>}
                   {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
@@ -276,13 +302,7 @@ export default function LeadDetail() {
         </div>
       </div>
 
-      {sendOpen && (
-        <BulkSendModal
-          leadIds={[leadId]}
-          onClose={() => setSendOpen(false)}
-          onSent={() => { setSendOpen(false); load(); }}
-        />
-      )}
+      {missingResult && <MissingDetailsResult result={missingResult} onClose={() => setMissingResult(null)} />}
     </div>
   );
 }
