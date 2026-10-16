@@ -22,3 +22,9 @@ http.interceptors.response.use(
     return Promise.reject(err);
   }
 );
+
+// Origin of the public PMC Yellow Pages website (where badge images, the
+// sample card etc. are hosted) — derived from the API base URL.
+export const SITE_ORIGIN = (() => {
+  try { return new URL(http.defaults.baseURL, window.location.href).origin; } catch { return ''; }
+})();

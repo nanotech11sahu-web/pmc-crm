@@ -1,4 +1,6 @@
 export function LeadTypeBadge({ type }) {
+  // No type chosen yet (new leads start unset) — show nothing rather than a default.
+  if (!type) return null;
   const label = { hot: 'Hot', medium: 'Medium', cold: 'Cold' }[type] || type;
   return <span className={`badge badge-${type}`}>{label}</span>;
 }

@@ -363,3 +363,32 @@ export async function listCampaignRecipients(id, { channel = '', status = '', pa
     : (await http.get(`/campaigns/${id}/recipients`, { params: { channel, status, page, per_page: perPage } })).data;
   return { rows: rowsOf(data), total: Number(data.total ?? 0), demo: !!data.demo };
 }
+
+// ---------------------------------------------------------------------
+// "Missing details" WhatsApp messages. The backend picks the approved
+// template per route and fills the owner's name — the frontend sends only
+// directory ids (never a template name or text). A listing that is not in
+// the state the route names is SKIPPED server-side, never messaged.
+//   missing-mobile -> email present, mobile missing
+//   missing-email  -> mobile present, email missing
+//   missing-both   -> both missing
+// ---------------------------------------------------------------------
+const MISSING_ROUTE = { mobile: 'missing-mobile', email: 'missing-email', both: 'missing-both' };
+
+// Sends in chunks (server max is 2000 per call). If a later chunk fails, what was
+// already sent is kept and the problem is reported in `error`.
+export async function sendMissingDetails(kind, directoryIds, chunk = 1000) {
+  const merged = { kind, route: MISSING_ROUTE[kind], template: null, total: 0, sent: 0, failed: 0, skipped: 0, results: [], error: '' };
+  for (let i = 0; i < directoryIds.length; i += chunk) {
+    try {
+      const { data } = await http.post(`/messages/${MISSING_ROUTE[kind]}`, { directoryIds: directoryIds.slice(i, i + chunk).map(Number) });
+      merged.template = data.template ?? merged.template;
+      ['total', 'sent', 'failed', 'skipped'].forEach((k) => { merged[k] += Number(data[k] || 0); });
+      merged.results.push(...(data.results || []));
+    } catch (e) {
+      merged.error = e.response?.data?.error || e.message;
+      break;
+    }
+  }
+  return merged;
+}
