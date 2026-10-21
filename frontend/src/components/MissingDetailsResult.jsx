@@ -10,7 +10,7 @@ export default function MissingDetailsResult({ result, onClose }) {
     <div className="fixed inset-0 bg-black/40 z-50 flex items-start sm:items-center justify-center p-4 overflow-y-auto">
       <div className="card w-full max-w-xl p-5 sm:p-6 my-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold">Missing-details WhatsApp</h2>
+          <h2 className="text-lg font-bold">Send result</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700" aria-label="Close">✕</button>
         </div>
 
@@ -20,22 +20,22 @@ export default function MissingDetailsResult({ result, onClose }) {
           <div className="rounded-lg bg-slate-50 border border-slate-200 p-3"><div className="text-xs text-slate-500">Skipped</div><div className="text-2xl font-bold text-slate-600">{sum('skipped').toLocaleString()}</div></div>
         </div>
         <div className="text-xs text-slate-400 mb-3">
-          "Sent" means WhatsApp accepted it — delivery is confirmed later and shows in the listing's message history.
+          "Sent" means it was accepted for delivery — delivery is confirmed later and shows in the listing's message history.
           {result.leftOut ? ` ${result.leftOut.toLocaleString()} listing(s) with complete details were left out.` : ''}
         </div>
 
         <div className="space-y-1 mb-3 text-sm">
           {result.groups.map((g) => (
-            <div key={g.kind} className="flex justify-between">
-              <span>{KIND_LABEL[g.kind]}{g.template ? <span className="text-slate-400"> · {g.template}</span> : null}</span>
+            <div key={g.templateId || g.kind} className="flex justify-between">
+              <span>{g.title || KIND_LABEL[g.kind]}{g.template ? <span className="text-slate-400"> · {g.template}</span> : null}</span>
               <span className="text-slate-500">{g.sent} sent · {g.failed} failed · {g.skipped} skipped</span>
             </div>
           ))}
         </div>
 
         {errors.map((g) => (
-          <div key={g.kind} className="mb-3 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
-            {KIND_LABEL[g.kind]}: {g.error}
+          <div key={g.templateId || g.kind} className="mb-3 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+            {g.title || KIND_LABEL[g.kind]}: {g.error}
           </div>
         ))}
 

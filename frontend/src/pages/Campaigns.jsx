@@ -3,6 +3,8 @@ import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import CampaignForm from '../components/CampaignForm.jsx';
 import Spinner from '../components/Spinner.jsx';
+import MissingDetailsResult from '../components/MissingDetailsResult.jsx';
+import { KIND_LABEL } from '../config/messageTemplates.js';
 
 // Campaigns: bulk send to whole categories on one or more channels, with
 // live status. The list auto-refreshes every 60s so you see "X sent out of
@@ -82,6 +84,7 @@ function CampaignCard({ c, onOpen }) {
         {shown.map((cat) => <span key={cat} className="badge bg-slate-100 text-slate-600">{cat}</span>)}
         {c.categories.length > shown.length && <span className="badge bg-slate-100 text-slate-500">+{c.categories.length - shown.length} more</span>}
         {c.channels.map((ch) => <span key={ch} className="badge bg-slate-900 text-white">{CHANNEL_LABEL[ch] || ch}</span>)}
+        {c.message_type === 'missing_details' && <span className="badge bg-amber-100 text-amber-800">Missing details</span>}
       </div>
 
       <div className="mt-4 space-y-2">
@@ -217,6 +220,31 @@ function CampaignDetail({ id, initial, canCancel, canRetry, onClose, onChanged }
             </tbody>
           </table>
         </div>
+        {c.by_template && Object.keys(c.by_template).length > 0 && (
+          <div className="overflow-x-auto border rounded-lg mb-4">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-400 text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="text-left px-3 py-2">Message</th>
+                  {['Total', 'Sent', 'Delivered', 'Failed', 'Skipped', 'Queued'].map((h) => <th key={h} className="text-right px-3 py-2">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {Object.entries(c.by_template).map(([k, b]) => (
+                  <tr key={k}>
+                    <td className="px-3 py-2 font-medium">{KIND_LABEL[k] || k}</td>
+                    <td className="px-3 py-2 text-right">{n(b.total)}</td>
+                    <td className="px-3 py-2 text-right text-green-600">{n(b.sent)}</td>
+                    <td className="px-3 py-2 text-right">{n(b.delivered)}</td>
+                    <td className="px-3 py-2 text-right text-red-600">{n(b.failed)}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">{n(b.skipped)}</td>
+                    <td className="px-3 py-2 text-right text-blue-600">{n(b.queued)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
         <div className="text-xs text-slate-400 -mt-2 mb-4">
           Skipped = the listing has no email / mobile for that channel. {active ? 'Auto-refreshing every 60 seconds.' : ''} Last updated {fmt(c.updated_at)}.
         </div>
@@ -293,6 +321,7 @@ export default function Campaigns() {
   const [demo, setDemo] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [detail, setDetail] = useState(null); // campaign being viewed
+  const [missingResult, setMissingResult] = useState(null); // result of a missing-details WhatsApp send
   const lastLoad = useRef(0);
 
   const load = useCallback(async ({ silent = false } = {}) => {
@@ -408,8 +437,11 @@ export default function Campaigns() {
         <CampaignForm
           onClose={() => setFormOpen(false)}
           onCreated={(campaign) => { setFormOpen(false); setPage(1); load({ silent: true }); setDetail(campaign); }}
+          onMissingSent={(result) => { setFormOpen(false); setMissingResult(result); }}
         />
       )}
+
+      {missingResult && <MissingDetailsResult result={missingResult} onClose={() => setMissingResult(null)} />}
 
       {detail && (
         <CampaignDetail
