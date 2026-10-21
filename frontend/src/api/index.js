@@ -6,6 +6,7 @@
 // backend shapes directly.
 import { http } from './client.js';
 import { demo as campaignsMock } from './campaignsMock.js';
+import { TEMPLATES, MISSING_TEMPLATE } from '../config/messageTemplates.js';
 
 function rowsOf(data) {
   return data?.rows ?? (Array.isArray(data) ? data : []);
@@ -304,6 +305,7 @@ export function normalizeCampaign(c) {
     filters: c.filters || { premium: 'all', contact_status: '' },
     audience_total: Number(c.audience_total ?? 0) || 0,
     by_channel, totals,
+    by_template: c.by_template ? Object.fromEntries(Object.entries(c.by_template).map(([k, v]) => [k, normalizeCounts(v)])) : null,
   };
 }
 
@@ -373,15 +375,14 @@ export async function listCampaignRecipients(id, { channel = '', status = '', pa
 //   missing-email  -> mobile present, email missing
 //   missing-both   -> both missing
 // ---------------------------------------------------------------------
-const MISSING_ROUTE = { mobile: 'missing-mobile', email: 'missing-email', both: 'missing-both' };
-
 // Sends in chunks (server max is 2000 per call). If a later chunk fails, what was
 // already sent is kept and the problem is reported in `error`.
-export async function sendMissingDetails(kind, directoryIds, chunk = 1000) {
-  const merged = { kind, route: MISSING_ROUTE[kind], template: null, total: 0, sent: 0, failed: 0, skipped: 0, results: [], error: '' };
+export async function sendTemplateMessage(templateId, directoryIds, chunk = 1000) {
+  const t = TEMPLATES[templateId];
+  const merged = { templateId, title: t.title, channel: t.channel, route: t.route, template: null, total: 0, sent: 0, failed: 0, skipped: 0, results: [], error: '' };
   for (let i = 0; i < directoryIds.length; i += chunk) {
     try {
-      const { data } = await http.post(`/messages/${MISSING_ROUTE[kind]}`, { directoryIds: directoryIds.slice(i, i + chunk).map(Number) });
+      const { data } = await http.post(`/messages/${t.route}`, { directoryIds: directoryIds.slice(i, i + chunk).map(Number) });
       merged.template = data.template ?? merged.template;
       ['total', 'sent', 'failed', 'skipped'].forEach((k) => { merged[k] += Number(data[k] || 0); });
       merged.results.push(...(data.results || []));
@@ -391,4 +392,16 @@ export async function sendMissingDetails(kind, directoryIds, chunk = 1000) {
     }
   }
   return merged;
+}
+
+// kind = 'mobile' | 'email' | 'both' — the "missing details" WhatsApp for that state.
+export async function sendMissingDetails(kind, directoryIds, chunk) {
+  return { ...(await sendTemplateMessage(MISSING_TEMPLATE[kind], directoryIds, chunk)), kind };
+}
+
+// The five fixed messages exactly as the server will send them (title, template
+// name, full text, image). Used for the on-screen previews.
+export async function getMessagePreviews() {
+  const { data } = await http.get('/messages/previews');
+  return data?.templates ?? [];
 }

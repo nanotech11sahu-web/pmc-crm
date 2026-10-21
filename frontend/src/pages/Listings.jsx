@@ -1,11 +1,12 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../api/index.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { StageBadge, MissingBadge, MissingFieldBadge, PremiumBadge } from '../components/Badge.jsx';
 import CallButton from '../components/CallButton.jsx';
 import MissingDetailsResult from '../components/MissingDetailsResult.jsx';
-import { runMissingDetails, KIND_LABEL } from '../utils/missingDetails.js';
+import SendMessageModal from '../components/SendMessageModal.jsx';
+import { KIND_LABEL } from '../config/messageTemplates.js';
 import InlineContactCell from '../components/InlineContactCell.jsx';
 import TableLoadingOverlay from '../components/TableLoadingOverlay.jsx';
 import SearchableSelect from '../components/SearchableSelect.jsx';
@@ -35,6 +36,55 @@ const STAGE_STYLES = {
   lost: 'bg-slate-100 text-slate-400 border-slate-200',
 };
 
+// The leads list (/leads) does not include each listing's details (name, city,
+// email, mobile…), so for the type / stage / owner filters we look them up from
+// the lead's detail — cached, and only for the rows being shown (a few at a time).
+const MAX_COMBINE = 200; // most leads we'll look up in one go (for filters that need every row)
+const dirCache = new Map(); // lead id -> directory details
+
+async function directoryOf(lead) {
+  if (lead.directory && Object.keys(lead.directory).length) return lead.directory;
+  if (dirCache.has(lead.id)) return dirCache.get(lead.id);
+  try {
+    const full = await api.getLead(lead.id);
+    const d = full?.directory || {};
+    dirCache.set(lead.id, d);
+    return d;
+  } catch {
+    return {}; // leave it blank rather than failing the whole list; not cached, so it retries
+  }
+}
+
+async function inChunks(items, size, fn) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(fn)));
+  return out;
+}
+
+function leadToRow(l, d) {
+  const mk = api.missingKind(d);
+  return {
+    DirectoryID: l.directory_id,
+    CompanyName: d.CompanyName,
+    CategoryName: d.CategoryName,
+    CurrentCity: d.CurrentCity,
+    ContactName: d.ContactName,
+    EmailAddress: d.EmailAddress,
+    MobileNumber: d.MobileNumber,
+    PhoneNumber: d.PhoneNumber,
+    is_premium: d.is_premium,
+    missing_kind: mk,
+    is_missing: l.is_flagged_missing || mk === 'both',
+    lead_id: l.id, lead_type: l.lead_type, stage: l.stage, owner_user_id: l.owner_user_id,
+    owner_name: l.owner?.name, remark: l.remark, batch_label: l.batch_label, followup_count: l.followup_count,
+  };
+}
+
+async function leadsToRows(leads) {
+  const dirs = await inChunks(leads, 5, directoryOf);
+  return leads.map((l, i) => leadToRow(l, dirs[i]));
+}
+
 export default function Listings() {
   const { user, can } = useAuth();
   const navigate = useNavigate();
@@ -63,7 +113,10 @@ export default function Listings() {
   const [meta, setMeta] = useState({ categories: [], cities: [] });
   const [selected, setSelected] = useState(new Set());
   const [missingBusy, setMissingBusy] = useState(false);
-  const [missingResult, setMissingResult] = useState(null);
+  const [missingResult, setMissingResult] = useState(null); // result screen after a send
+  const [notice, setNotice] = useState('');
+  const leadScope = useRef({ leads: [], rows: null }); // the full lead filter result (for "send to all")
+  const [sendRows, setSendRows] = useState(null);           // listings the Send modal is open for
   const [remarkRow, setRemarkRow] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -81,32 +134,31 @@ export default function Listings() {
           leadType: filters.leadType, stage: filters.stage, ownerId: filters.ownerId,
           missingOnly: filters.missingOnly, category: filters.category, city: filters.city, search: filters.search,
         });
-        let mapped = leads.map((l) => {
-          const d = l.directory || {};
-          const mk = api.missingKind(d);
-          return {
-            DirectoryID: l.directory_id,
-            CompanyName: d.CompanyName,
-            CategoryName: d.CategoryName,
-            CurrentCity: d.CurrentCity,
-            ContactName: d.ContactName,
-            EmailAddress: d.EmailAddress,
-            MobileNumber: d.MobileNumber,
-            is_premium: d.is_premium,
-            PhoneNumber: d.PhoneNumber,
-            missing_kind: mk,
-            is_missing: l.is_flagged_missing || mk === 'both',
-            lead_id: l.id, lead_type: l.lead_type, stage: l.stage, owner_user_id: l.owner_user_id,
-            owner_name: l.owner?.name, remark: l.remark, batch_label: l.batch_label, followup_count: l.followup_count,
-          };
-        });
-        if (filters.contactStatus === 'complete') mapped = mapped.filter((r) => r.missing_kind === '');
-        else if (filters.contactStatus) mapped = mapped.filter((r) => r.missing_kind === filters.contactStatus);
-        if (filters.premium === 'premium') mapped = mapped.filter((r) => r.is_premium);
-        else if (filters.premium === 'non') mapped = mapped.filter((r) => !r.is_premium);
-        setRows(mapped);
-        setTotal(mapped.length);
+        const from = (page - 1) * PER_PAGE;
+        // Contact-status / premium filters need every lead's details, so they can only be
+        // combined with a small result; otherwise only the visible page is looked up.
+        const needAll = !!(filters.contactStatus || filters.premium);
+        if (needAll && leads.length > MAX_COMBINE) {
+          setNotice(`${leads.length.toLocaleString()} leads match — too many to also filter by contact status / premium. Narrow the type, stage or owner first.`);
+        } else {
+          setNotice('');
+        }
+        if (needAll && leads.length <= MAX_COMBINE) {
+          let mapped = await leadsToRows(leads);
+          if (filters.contactStatus === 'complete') mapped = mapped.filter((r) => r.missing_kind === '');
+          else if (filters.contactStatus) mapped = mapped.filter((r) => r.missing_kind === filters.contactStatus);
+          if (filters.premium === 'premium') mapped = mapped.filter((r) => r.is_premium);
+          else if (filters.premium === 'non') mapped = mapped.filter((r) => !r.is_premium);
+          leadScope.current = { leads, rows: mapped };
+          setRows(mapped.slice(from, from + PER_PAGE));
+          setTotal(mapped.length);
+        } else {
+          leadScope.current = { leads, rows: null };
+          setRows(await leadsToRows(leads.slice(from, from + PER_PAGE)));
+          setTotal(leads.length);
+        }
       } else {
+        setNotice('');
         const [dirRes, leads] = await Promise.all([
           api.listDirectory({ search: filters.search, category: filters.category, city: filters.city, missingOnly: filters.missingOnly, contactStatus: filters.contactStatus, premium: filters.premium, page, perPage: PER_PAGE }),
           api.listLeads({ category: filters.category, city: filters.city, search: filters.search }),
@@ -206,31 +258,20 @@ export default function Listings() {
     navigate(`/listings/${row.DirectoryID}`, { state: { leadId: row.lead_id } });
   }
 
-  // "Missing details" WhatsApp: the backend picks the approved template per
-  // listing state; we just hand it the listings (grouped by what each is missing).
-  async function requestMissing(list) {
+  // Send (WhatsApp or SMS) to one listing, the ticked listings, or every listing
+  // matching the current filters. The modal handles channel + message choice.
+  function openSend(list) { setSendRows(list); }
+  function openSendSelected() { openSend(rows.filter((r) => selected.has(r.DirectoryID))); }
+
+  async function openSendAll() {
     setMissingBusy(true);
     try {
-      const result = await runMissingDetails(list, { confirm: list.length > 1 });
-      if (result) { setMissingResult(result); setSelected(new Set()); load(); }
-    } catch (e) {
-      alert(e.response?.data?.error || e.message);
-    } finally {
-      setMissingBusy(false);
-    }
-  }
-
-  function requestMissingSelected() {
-    requestMissing(rows.filter((r) => selected.has(r.DirectoryID)));
-  }
-
-  // Every listing matching the current filters (not just this page) — only offered
-  // when filtered to a missing-details state, so the audience is exactly those listings.
-  async function requestMissingAllMatching() {
-    setMissingBusy(true);
-    try {
-      let all = rows;
-      if (!leadFilterActive) {
+      let all;
+      if (leadFilterActive) {
+        const { leads, rows: mapped } = leadScope.current;
+        if (leads.length > MAX_COMBINE) { alert(`${leads.length.toLocaleString()} leads match — too many to send to at once from this filter. Narrow the type, stage or owner first.`); return; }
+        all = mapped || await leadsToRows(leads);
+      } else {
         all = [];
         for (let pg = 1; pg <= 40; pg += 1) {
           const res = await api.listDirectory({
@@ -241,15 +282,16 @@ export default function Listings() {
           if (all.length >= res.total || res.rows.length === 0) break;
         }
       }
-      setMissingBusy(false);
-      await requestMissing(all);
+      if (all.length === 0) { alert('No listings match the current filters.'); return; }
+      openSend(all);
     } catch (e) {
-      setMissingBusy(false);
       alert(e.response?.data?.error || e.message);
+    } finally {
+      setMissingBusy(false);
     }
   }
 
-  const totalPages = leadFilterActive ? 1 : Math.max(1, Math.ceil(total / PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
 
   return (
     <div className="p-4 sm:p-8">
@@ -261,13 +303,13 @@ export default function Listings() {
         {can('message.bulk_send') && (selected.size > 0 || KIND_LABEL[filters.contactStatus] || filters.category) && (
           <div className="flex flex-wrap gap-2 shrink-0 self-start sm:self-auto items-center">
             {selected.size > 0 && (
-              <button className="btn btn-primary" disabled={missingBusy} onClick={requestMissingSelected} title="Sends the approved WhatsApp that matches what each selected business is missing">
-                {missingBusy ? 'Sending…' : `Send WhatsApp (${selected.size} selected)`}
+              <button className="btn btn-primary" disabled={missingBusy} onClick={openSendSelected}>
+                Send ({selected.size} selected)
               </button>
             )}
             {(KIND_LABEL[filters.contactStatus] || filters.category) && (
-              <button className="btn btn-secondary" disabled={missingBusy} onClick={requestMissingAllMatching} title="Sends the approved WhatsApp to every matching listing that is missing details (listings with complete details are left out)">
-                {missingBusy ? 'Working…' : `Send WhatsApp · all ${leadFilterActive ? rows.length : total}${filters.category ? ` in ${filters.category}` : ''}${KIND_LABEL[filters.contactStatus] ? ` (${KIND_LABEL[filters.contactStatus].toLowerCase()})` : ''}`}
+              <button className="btn btn-secondary" disabled={missingBusy} onClick={openSendAll} title="Send to every matching listing, not just this page">
+                {missingBusy ? 'Loading…' : `Send · all ${total.toLocaleString()}${filters.category ? ` in ${filters.category}` : ''}${KIND_LABEL[filters.contactStatus] ? ` (${KIND_LABEL[filters.contactStatus].toLowerCase()})` : ''}`}
               </button>
             )}
           </div>
@@ -327,6 +369,8 @@ export default function Listings() {
           <button className="text-xs text-slate-400 hover:text-slate-600" onClick={() => setFilter('category', '')}>clear</button>
         </div>
       )}
+
+      {notice && <div className="mb-3 text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{notice}</div>}
 
       {/* Mobile: card list instead of a 10-column table, which doesn't work on small screens */}
       <div className="md:hidden relative">
@@ -391,8 +435,8 @@ export default function Listings() {
                   {r.owner_name || 'No owner'} · {r.followup_count || 0} follow-up{r.followup_count === 1 ? '' : 's'}
                 </div>
                 <div className="flex gap-2">
-                  {can('message.send_whatsapp') && (
-                    <button className="btn btn-secondary btn-sm" disabled={missingBusy || !r.missing_kind} title={r.missing_kind ? `Sends the approved WhatsApp for: ${KIND_LABEL[r.missing_kind].toLowerCase()}` : 'Contact details are complete — no missing-details message applies'} onClick={() => requestMissing([r])}>Send WhatsApp</button>
+                  {(can('message.send_whatsapp') || can('message.send_sms')) && (
+                    <button className="btn btn-secondary btn-sm" onClick={() => openSend([r])} title="Send a WhatsApp or SMS to this listing">Send</button>
                   )}
                   <CallButton row={r} />
                   {(can('lead.edit') || can('lead.create')) && (
@@ -498,8 +542,8 @@ export default function Listings() {
                 </td>
                 <td className="px-4 py-3.5 text-slate-500">{r.followup_count || 0}</td>
                 <td className="px-4 py-3.5 text-right whitespace-nowrap">
-                  {can('message.send_whatsapp') && (
-                    <button className="btn btn-secondary btn-sm mr-2" disabled={missingBusy || !r.missing_kind} title={r.missing_kind ? `Sends the approved WhatsApp for: ${KIND_LABEL[r.missing_kind].toLowerCase()}` : 'Contact details are complete — no missing-details message applies'} onClick={() => requestMissing([r])}>Send WhatsApp</button>
+                  {(can('message.send_whatsapp') || can('message.send_sms')) && (
+                    <button className="btn btn-secondary btn-sm mr-2" onClick={() => openSend([r])} title="Send a WhatsApp or SMS to this listing">Send</button>
                   )}
                   <CallButton row={r} className="btn btn-secondary btn-sm mr-2" />
                   <button className="btn btn-secondary btn-sm" onClick={() => openRow(r)}>Open</button>
@@ -513,15 +557,21 @@ export default function Listings() {
         </table>
       </div>
 
-      {!leadFilterActive && (
-        <div className="flex items-center justify-between mt-4 text-sm text-slate-500">
-          <div>{total} listings</div>
-          <div className="flex gap-2">
-            <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
-            <div className="px-2 py-1">Page {page} / {totalPages}</div>
-            <button className="btn btn-secondary btn-sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
-          </div>
+      <div className="flex items-center justify-between mt-4 text-sm text-slate-500">
+        <div>{total.toLocaleString()} listings</div>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
+          <div className="px-2 py-1">Page {page} / {totalPages}</div>
+          <button className="btn btn-secondary btn-sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+
+      {sendRows && (
+        <SendMessageModal
+          rows={sendRows}
+          onClose={() => setSendRows(null)}
+          onSent={(result) => { setSendRows(null); setMissingResult(result); setSelected(new Set()); load(); }}
+        />
       )}
 
       {missingResult && <MissingDetailsResult result={missingResult} onClose={() => setMissingResult(null)} />}

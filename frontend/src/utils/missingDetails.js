@@ -1,6 +1,7 @@
 import * as api from '../api/index.js';
 
-export const KIND_LABEL = { mobile: 'Mobile missing', email: 'Email missing', both: 'Mobile & email missing' };
+import { KIND_LABEL } from '../config/messageTemplates.js';
+export { KIND_LABEL };
 
 // Send the approved "your listing is missing details" WhatsApp to every
 // listing in `rows` that is actually missing something, using the route

@@ -1,4 +1,6 @@
 import { SITE_ORIGIN } from '../api/client.js';
+import { useTemplates } from '../hooks/useTemplates.js';
+import MessagePreview from './MessagePreview.jsx';
 
 // Read-only "what will be sent" panel. The messages are FIXED on the
 // server — the user never picks or types anything — so this is purely
@@ -12,32 +14,15 @@ function CardImage() {
   return (
     <img
       src={SAMPLE_CARD} alt="Sample PMC listing card"
-      className="rounded-lg border border-slate-200 w-full max-w-sm"
+      className="rounded-lg border border-slate-200 w-full max-w-[220px]"
       onError={(e) => { e.currentTarget.style.display = 'none'; }}
     />
   );
 }
 
-function WhatsApp() {
-  return (
-    <div className="space-y-2">
-      <CardImage />
-      <div className="rounded-lg bg-green-50 border border-green-100 px-3 py-2 text-sm text-slate-700 max-w-sm space-y-1">
-        <div className="font-semibold">GET PMC VERIFIED &amp; PMC TRUSTED TODAY…</div>
-        <div>Lifetime offer: <b>₹1499</b></div>
-        <div>Call / WhatsApp: <b>9437404000</b></div>
-      </div>
-    </div>
-  );
-}
+function WhatsApp() { const T = useTemplates(); return <MessagePreview template={T.wa_promo} />; }
 
-function Sms() {
-  return (
-    <div className="rounded-lg bg-slate-100 border border-slate-200 px-3 py-2 text-sm text-slate-700 max-w-sm">
-      PMC Yellow Pages Update: Your business is not PMC VERIFIED/TRUSTED. Get a Premium Listing @Rs.1499 (Lifetime)… Call: 9437404000
-    </div>
-  );
-}
+function Sms() { const T = useTemplates(); return <MessagePreview template={T.sms_promo} />; }
 
 function Email() {
   return (
@@ -49,13 +34,13 @@ function Email() {
           <span className="font-semibold text-sm">PMC Yellow Pages</span>
         </div>
         <div className="p-4 space-y-3 bg-slate-50">
-          <div className="text-sm">Dear <i>&lt;business owner name&gt;</i>,</div>
+          <div className="text-sm">Dear Sir/Madam,</div>
           <CardImage />
           <div className="text-xs text-slate-400">Benefits of PMC Verified &amp; Trusted are listed in the email.</div>
           <span className="inline-block rounded-lg bg-slate-900 text-white text-sm font-medium px-4 py-2 select-none">Upgrade Today</span>
         </div>
       </div>
-      <div className="text-xs text-slate-400">Layout preview only — the email is addressed to each business owner by name.</div>
+      <div className="text-xs text-slate-400">Layout preview only.</div>
     </div>
   );
 }
